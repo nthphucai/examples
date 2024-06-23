@@ -1,0 +1,55 @@
+import gc
+
+import torch
+import fastapi
+from fastapi import File, Response, UploadFile, status
+from fastapi.openapi.docs import get_swagger_ui_html
+from loguru import logger
+from fastapi.params import Depends
+from .limiter import limiter
+
+from database import save_to_db
+from exceptions import TypingError, UnExpectedError
+from fastapi import HTTPException, Request
+from modules.generate import generator
+from modules.core import LLMGeneratorInit, init_generator
+from schemas import GenerateQuery
+
+router = fastapi.APIRouter()
+
+
+@router.get("/v1/generate/healthcheck", include_in_schema=False)
+async def healthcheck():
+    return {"message": "OK"}
+
+
+@router.get("/v1/generate/docs", include_in_schema=False)
+async def custom_swagger_ui_html():
+    return get_swagger_ui_html(
+        openapi_url="/v1/generate/openapi.json",
+        title="API",
+    )
+
+
+@router.post("/v1/from_search", status_code=200, tags=["Generate"])
+@limiter.limit("1/second")
+async def search(
+    request: Request,
+    item: GenerateQuery,
+    llm_generator: LLMGeneratorInit = Depends(init_generator),
+):
+    try:
+        result = generator(item, llm_generator)
+
+    except TypingError as error:
+        raise HTTPException(status_code=404) from error
+
+    except UnExpectedError as error:
+        raise HTTPException(status_code=500) from error
+
+    finally:
+        save_to_db()
+
+    gc.collect()
+    torch.cuda.empty_cache()
+    return result
